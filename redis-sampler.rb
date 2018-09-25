@@ -54,62 +54,78 @@ class RedisSampler
     end
 
     def sample
-        @samplesize.times {
+        one_percent = (@samplesize / 100.0).to_i
+        @samplesize.times { |n|
+          begin
             k = @redis.randomkey
-            p = @redis.pipelined {
+            begin
+              p = @redis.pipelined {
                 @redis.type(k)
                 @redis.ttl(k)
-            }
-            t = p[0]
-            x = p[1]
-            x = 'unknown' if x.to_i == -1
-            incr_freq_table(@types,t)
-            incr_freq_table(@expires,x)
-            case t
-            when 'zset'
+              }
+              t = p[0]
+              x = p[1]
+              x = 'unknown' if x.to_i == -1
+              incr_freq_table(@types,t)
+              incr_freq_table(@expires,x)
+              case t
+              when 'zset'
                 p = @redis.pipelined {
-                    @redis.zcard(k)
-                    @redis.zrange(k,0,0)
+                  @redis.zcard(k)
+                  @redis.zrange(k,0,0)
                 }
                 card = p[0]
                 ele = p[1][0]
                 incr_freq_table(@zset_card,card) if card != 0
                 incr_freq_table(@zset_elesize,ele.length) if ele
-            when 'set'
+              when 'set'
                 p = @redis.pipelined {
-                    @redis.scard(k)
-                    @redis.srandmember(k)
+                  @redis.scard(k)
+                  @redis.srandmember(k)
                 }
                 card = p[0]
                 ele = p[1]
                 incr_freq_table(@set_card,card) if card != 0
                 incr_freq_table(@set_elesize,ele.length) if ele
-            when 'list'
+              when 'list'
                 p = @redis.pipelined {
-                    @redis.llen(k)
-                    @redis.lrange(k,0,0)
+                  @redis.llen(k)
+                  @redis.lrange(k,0,0)
                 }
                 len = p[0]
                 ele = p[1][0]
                 incr_freq_table(@list_len,len) if len != 0
                 incr_freq_table(@list_elesize,ele.length) if ele
-            when 'hash'
+              when 'hash'
                 l = @redis.hlen(k)
                 incr_freq_table(@hash_len,l) if l != 0
                 if l >= 32
-                    field = @redis.hkeys(k)[0]
-                    if field
-                        incr_freq_table(@hash_fsize,field.length)
-                        val = @redis.hget(k,field)
-                        incr_freq_table(@hash_vsize,val.length) if val
-                    end
+                  field = @redis.hkeys(k)[0]
+                  if field
+                    incr_freq_table(@hash_fsize,field.length)
+                    val = @redis.hget(k,field)
+                    incr_freq_table(@hash_vsize,val.length) if val
+                  end
                 else
-                    incr_freq_table(@hash_fsize,'unknown')
-                    incr_freq_table(@hash_vsize,'unknown')
+                  incr_freq_table(@hash_fsize,'unknown')
+                  incr_freq_table(@hash_vsize,'unknown')
                 end
-            when 'string'
+              when 'string'
                 incr_freq_table(@string_elesize,@redis.strlen(k))
+              end
+
+              if n > 0 && n % one_percent == 0
+                percent = ((n / @samplesize.to_f) * 100).to_i
+                puts "#{n}/#{@samplesize} #{percent}%"
+              end
+            rescue Redis::TimeoutError
+              puts "Caught timeout on #{k}. Retrying."
+              retry
             end
+          rescue Redis::TimeoutError
+            puts "Caught timeout. Retrying."
+            retry
+          end
         }
     end
 
